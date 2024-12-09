@@ -6,8 +6,7 @@ use criterion::{
 
 use sunscreen_tfhe::{
     entities::{
-        GgswCiphertext, GgswCiphertextFft, GlweCiphertext, Polynomial, PolynomialRef,
-        PublicFunctionalKeyswitchKey, UnivariateLookupTable,
+        GgswCiphertext, GgswCiphertextFft, GlweCiphertext, LweCiphertext, Polynomial, PolynomialRef, PublicFunctionalKeyswitchKey, UnivariateLookupTable
     },
     high_level::{self, *},
     ops::{
@@ -18,7 +17,8 @@ use sunscreen_tfhe::{
     },
     rand::Stddev,
     GlweDef, GlweDimension, GlweSize, LweDef, LweDimension, PlaintextBits, PolynomialDegree,
-    RadixCount, RadixDecomposition, RadixLog, Torus, GLWE_1_1024_80, GLWE_5_256_80, LWE_512_80,
+    RadixCount, RadixDecomposition, RadixLog, Torus, GLWE_1_1024_80, GLWE_1_2048_128,
+    GLWE_5_256_80, LWE_512_128, LWE_512_80,
 };
 
 fn cmux(c: &mut Criterion) {
@@ -92,11 +92,25 @@ fn programmable_bootstrapping(c: &mut Criterion) {
         lwe: &LweDef,
         glwe: &GlweDef,
         bs_radix: &RadixDecomposition,
+        should_keyswitch: bool,
     ) {
         let lwe_sk = keygen::generate_binary_lwe_sk(lwe);
         let glwe_sk = keygen::generate_binary_glwe_sk(glwe);
         let bsk = keygen::generate_bootstrapping_key(&lwe_sk, &glwe_sk, lwe, glwe, bs_radix);
         let bsk = fft::fft_bootstrap_key(&bsk, lwe, glwe, bs_radix);
+        let ks_radix = RadixDecomposition {
+            count: RadixCount(5),
+            radix_log: RadixLog(3),
+        };
+
+
+        let lwe_ksk = keygen::generate_ksk(
+            &glwe_sk.to_lwe_secret_key(),
+            &lwe_sk,
+            &glwe.as_lwe_def(),
+            &lwe,
+            &ks_radix
+        );
 
         let ct = lwe_sk.encrypt(1, lwe, PlaintextBits(1)).0;
         let lut = UnivariateLookupTable::trivial_from_fn(|x| x, glwe, PlaintextBits(1));
@@ -104,6 +118,12 @@ fn programmable_bootstrapping(c: &mut Criterion) {
         g.bench_function(name, |b| {
             b.iter(|| {
                 evaluation::univariate_programmable_bootstrap(&ct, &lut, &bsk, lwe, glwe, bs_radix);
+
+                if should_keyswitch {
+                    let mut result = LweCiphertext::new(&glwe.as_lwe_def());
+
+                    evaluation::keyswitch_lwe_to_lwe(&mut result, &lwe_ksk, &glwe.as_lwe_def(), &lwe, &ks_radix);
+                }
             });
         });
     }
@@ -116,12 +136,21 @@ fn programmable_bootstrapping(c: &mut Criterion) {
         radix_log: RadixLog(16),
     };
 
+    let level_2_params = GLWE_1_2048_128;
+    let level_0_params = LweDef {
+        dim: LweDimension(637),
+        std: Stddev(6.27510880527384e-05),
+    };
+
     run_bench(
         "CBS parameters",
         &mut g,
-        &LWE_512_80,
-        &GLWE_5_256_80,
+        &level_0_params,
+        &level_2_params,
+        //&LWE_512_80,
+        //&GLWE_5_256_80,
         &radix,
+        false,
     );
 
     // Binary PBS parameters
@@ -145,6 +174,7 @@ fn programmable_bootstrapping(c: &mut Criterion) {
             std: Stddev(0.00000004990272175010415),
         },
         &bs_radix,
+        true,
     );
 
     // 3-bit message 1-bit carry PBS parameters
@@ -154,20 +184,21 @@ fn programmable_bootstrapping(c: &mut Criterion) {
     };
 
     run_bench(
-        "3+1 message PBS parameters",
+        "2+2 message PBS parameters",
         &mut g,
         &LweDef {
-            dim: LweDimension(742),
-            std: Stddev(0.000007069849454709433),
+            dim: LweDimension(834),
+            std: Stddev(3.5539902359442825e-06),
         },
         &GlweDef {
             dim: GlweDimension {
                 size: GlweSize(1),
                 polynomial_degree: PolynomialDegree(2048),
             },
-            std: Stddev(0.00000000000000029403601535432533),
+            std: Stddev(2.845267479601915e-15),
         },
         &bs_radix,
+        true,
     );
 }
 
@@ -177,17 +208,23 @@ fn circuit_bootstrapping(c: &mut Criterion) {
         radix_log: RadixLog(16),
     };
     let cbs_radix = RadixDecomposition {
-        count: RadixCount(1),
-        radix_log: RadixLog(11),
+        count: RadixCount(7),
+        radix_log: RadixLog(2),
     };
     let pfks_radix = RadixDecomposition {
-        count: RadixCount(3),
-        radix_log: RadixLog(11),
+        count: RadixCount(2),
+        radix_log: RadixLog(17),
     };
 
-    let level_2_params = GLWE_5_256_80;
-    let level_1_params = GLWE_1_1024_80;
-    let level_0_params = LWE_512_80;
+    // let level_2_params = GLWE_5_256_80;
+    // let level_1_params = GLWE_1_1024_80;
+    // let level_0_params = LWE_512_80;
+    let level_2_params = GLWE_1_2048_128;
+    let level_1_params = GLWE_1_2048_128;
+    let level_0_params = LweDef {
+        dim: LweDimension(637),
+        std: Stddev(6.27510880527384e-05),
+    };
 
     let sk_0 = keygen::generate_binary_lwe_sk(&level_0_params);
     let sk_1 = keygen::generate_binary_glwe_sk(&level_1_params);
